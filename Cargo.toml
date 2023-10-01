@@ -1,0 +1,18 @@
+[package]
+name = "growatt"
+version = "1.0.2"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+chrono = "0.4.26"
+log = "0.4.20"
+md5 = "0.7.0"
+regex = "1.9.5"
+reqwest = { version = "0.11.18", features = ["json"] }
+serde = { version = "1.0.183", features = ["derive"] }
+serde_json = "1.0.105"
+
+[dev-dependencies]
+actix-rt = "*"
