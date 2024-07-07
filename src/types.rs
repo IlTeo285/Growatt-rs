@@ -7,6 +7,28 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt::Debug;
 
+
+#[derive(thiserror::Error, Debug)]
+pub enum RequestError {
+    
+    #[error("failed to login, unable to extract credentials")]
+    LoginCredentialExtraction(#[from] reqwest::header::InvalidHeaderValue),
+
+    #[error("failed to login")]
+    LoginFailed,
+
+    #[error("unable to perform the reqest")]
+    RequestError(#[from] reqwest::Error),
+
+    #[error("unable to decode response")]
+    MalformedResponse(#[from] serde_json::Error),
+
+    #[error("unable to decode response")]
+    GenericError,
+}
+
+pub type GrowattResult = Result<String, RequestError>;
+
 pub(crate) mod utils {
 
     use serde::de::{self, Deserialize, Deserializer};

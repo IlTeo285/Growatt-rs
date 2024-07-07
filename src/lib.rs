@@ -1,19 +1,27 @@
 pub mod types;
 
 use regex::Regex;
+use types::{RequestError, GrowattResult};
 use std::collections::HashMap;
 
 use serde_json::Value;
 
 use reqwest::{
-    header::{self, HeaderValue},
-    Client,
+    header::{self, HeaderMap, HeaderValue},
+    Client, ClientBuilder,
 };
 
+const BASE_SERVER_URL: &str = "https://server.growatt.com/";
+
+macro_rules! url {
+    ($page:expr) => {
+            format!("{}{}", BASE_SERVER_URL, $page)
+    };
+}
+
 pub struct GrowattServer {
-    server_url: String,
     client: Client,
-    cookie: header::HeaderMap,
+    cookie: Option<header::HeaderMap>,
 }
 
 impl Default for GrowattServer {
@@ -24,10 +32,17 @@ impl Default for GrowattServer {
 
 impl GrowattServer {
     pub fn new() -> Self {
+
+        let mut headers = header::HeaderMap::new();
+        headers.insert("User-Agent", header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36-11"));
+        headers.insert("Connection", header::HeaderValue::from_static("keep-alive"));
+
+        let client_builder = ClientBuilder::new()
+            .default_headers(headers);
+
         Self {
-            server_url: "https://server.growatt.com/".to_owned(),
-            client: Client::builder().build().unwrap(),
-            cookie: header::HeaderMap::new(),
+            client: client_builder.build().expect("unable to build client"),
+            cookie: None,
         }
     }
 
@@ -41,30 +56,18 @@ impl GrowattServer {
         parse_check
     }
 
-    fn get_url(&self, page: &str) -> String {
-        let mut ret = self.server_url.clone();
-        ret.push_str(page);
-        ret
-    }
-
     pub async fn login(
         &mut self,
         username: &str,
         password: &str,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        let url = self.get_url("login");
-
-        let mut headers = header::HeaderMap::new();
-        headers.insert("User-Agent", header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36-11"));
-        headers.insert("Connection", header::HeaderValue::from_static("keep-alive"));
+    ) -> GrowattResult {
 
         let payload: HashMap<&str, &str> =
             HashMap::from([("account", username), ("password", password)]);
 
         let res = self
             .client
-            .post(url)
-            .headers(headers)
+            .post(url!("login"))
             .form(&payload)
             .send()
             .await?;
@@ -93,15 +96,15 @@ impl GrowattServer {
         log::trace!("Cookie: {:?}", cookie);
 
         let cookie = HeaderValue::from_str(&cookie)?;
-        self.cookie.append("Cookie", cookie);
+        let mut h_map = HeaderMap::new();
+        h_map.append("Cookie", cookie);
+
+        self.cookie = Some(h_map);
 
         let body = res.text().await?;
 
         if Self::check_res(body.clone()) == false {
-            Err(
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "Missing success field")
-                    .into(),
-            )
+            Err(RequestError::LoginFailed)
         } else {
             Ok(body)
         }
@@ -111,20 +114,23 @@ impl GrowattServer {
         &self,
         mix_id: &str,
         plant_id: &str,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        let url = format!("panel/mix/getMIXStatusData?plantId={}", plant_id);
-        let url = self.get_url(&url);
+    ) -> GrowattResult {
+
+        let api = format!("panel/mix/getMIXStatusData?plantId={}", plant_id);
 
         let mut payload = HashMap::new();
         payload.insert("mixSn", mix_id);
 
-        let res = self
+        let mut reqest = self
             .client
-            .post(url)
-            .headers(self.cookie.clone())
-            .form(&payload)
-            .send()
-            .await?;
+            .post(url!(api))
+            .form(&payload);
+
+        if let Some(cred) = self.cookie.as_ref() {
+            reqest = reqest.headers(cred.clone())
+        }
+
+        let res  = reqest.send().await?;
 
         log::trace!(
             "mix_system_status request with status {}",
@@ -142,25 +148,27 @@ impl GrowattServer {
     pub async fn device_list_by_plant(
         &self,
         plant_id: &str,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        let url = format!(
+    ) -> GrowattResult {
+        let api = format!(
             "panel/getDevicesByPlantList?plantId={}&currPage=1",
             plant_id
         );
-        let url = self.get_url(&url);
 
-        let res = self
+        let mut reqest = self
             .client
-            .post(url)
-            .headers(self.cookie.clone())
-            .send()
-            .await?;
+            .post(url!(api));
+
+        if let Some(cred) = self.cookie.as_ref() {
+            reqest = reqest.headers(cred.clone())
+        }
+
+        let res  = reqest.send().await?;
 
         log::trace!("plant_list request with status {}", res.status().as_str());
 
         let content = res.text().await?;
         if Self::check_res(content.clone()) == false {
-            Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Succeed false").into())
+            Err(RequestError::GenericError)
         } else {
             Ok(content)
         }
@@ -202,19 +210,18 @@ mod tests {
     }
 
     #[actix_rt::test]
-    async fn get_mix_data() {
+    async fn get_mix_data() -> Result<(), RequestError> {
         let username = std::env::var("GROWATT_TESTS_USERNAME").unwrap();
         let password = std::env::var("GROWATT_TESTS_PASSWORD").unwrap();
         let plant_id = std::env::var("GROWATT_TESTS_PLANTID").unwrap();
         let mix_id = std::env::var("GROWATT_TESTS_MIXID").unwrap();
 
         let mut client = GrowattServer::new();
-        client.login(&username, &password).await.unwrap();
+        client.login(&username, &password).await?;
 
-        let res = client.device_list_by_plant(&plant_id).await;
+        client.device_list_by_plant(&plant_id).await?;
+        client.mix_system_status(&mix_id, &plant_id).await?;
 
-        let res = client.mix_system_status(&mix_id, &plant_id).await;
-
-        assert_eq!(res.is_ok(), true);
+        Ok(())
     }
 }
