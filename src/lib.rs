@@ -1,34 +1,19 @@
-use chrono::offset::Utc;
-use regex::Regex;
-use std::{collections::HashMap, fmt::Debug};
+pub mod types;
 
-use serde::{Deserialize, Serialize};
+use regex::Regex;
+use std::collections::HashMap;
+
 use serde_json::Value;
 
-use reqwest::{header, Client};
-
-pub(crate) mod utils {
-
-    use serde::de::{self, Deserialize, Deserializer};
-    use std::fmt::Display;
-    use std::str::FromStr;
-
-    pub fn from_str<'de, T, D>(deserializer: D) -> Result<T, D::Error>
-    where
-        T: FromStr,
-        T::Err: Display,
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        T::from_str(&s).map_err(de::Error::custom)
-    }
-}
+use reqwest::{
+    header::{self, HeaderValue},
+    Client,
+};
 
 pub struct GrowattServer {
     server_url: String,
     client: Client,
     cookie: header::HeaderMap,
-    referer: String,
 }
 
 impl Default for GrowattServer {
@@ -37,72 +22,10 @@ impl Default for GrowattServer {
     }
 }
 
-#[derive(Copy, Clone, Serialize)]
-pub struct When(i64);
-impl Default for When {
-    fn default() -> Self {
-        Self(Utc::now().timestamp_nanos_opt().unwrap())
-    }
-}
-
-impl Debug for When {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ns", self.0)
-    }
-}
-
-impl From<When> for i64 {
-    fn from(lhs: When) -> i64 {
-        lhs.0
-    }
-}
-
-#[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
-pub struct MixStatus {
-    #[serde(skip_deserializing)]
-    pub when: When,
-
-    #[serde(rename = "chargePower")]
-    pub power_battery_charge: f32,
-
-    #[serde(deserialize_with = "utils::from_str")]
-    #[serde(rename = "SOC")]
-    pub soc: u32,
-
-    #[serde(rename = "pLocalLoad")]
-    pub power_to_load: f32,
-
-    #[serde(deserialize_with = "utils::from_str")]
-    #[serde(rename = "pPv1")]
-    pub power_from_photovoltaic_1: f32,
-
-    #[serde(rename = "pactogrid")]
-    pub power_to_grid: f32,
-
-    #[serde(rename = "pactouser")]
-    pub power_to_user: f32,
-
-    #[serde(rename = "pdisCharge1")]
-    pub power_battery_discharge: f32,
-
-    #[serde(rename = "vAc1")]
-    #[serde(deserialize_with = "utils::from_str")]
-    pub voltage_grid: f32,
-
-    #[serde(rename = "vBat")]
-    #[serde(deserialize_with = "utils::from_str")]
-    pub voltage_battery: f32,
-
-    #[serde(rename = "vPv1")]
-    #[serde(deserialize_with = "utils::from_str")]
-    pub voltage_photovoltaic_1: f32,
-}
-
 impl GrowattServer {
     pub fn new() -> Self {
         Self {
             server_url: "https://server.growatt.com/".to_owned(),
-            referer: "".to_owned(),
             client: Client::builder().build().unwrap(),
             cookie: header::HeaderMap::new(),
         }
@@ -151,23 +74,26 @@ impl GrowattServer {
         let re_session = Regex::new(r"JSESSIONID=([^;]+)").unwrap();
         let se_session = Regex::new(r"SERVERID=").unwrap();
 
-        self.cookie.clear();
-        for el in res.headers().get_all("set-cookie") {
-            let current_cookie = el.to_str()?;
-            log::trace!("using cookie {}", current_cookie);
+        // Build cookie for reply
 
-            if let Some(caps) = re_session.captures(current_cookie) {
-                self.referer = format!(
-                    "https://server.growatt.com/index;jsessionid={}",
-                    caps[1].to_owned()
-                );
-                self.cookie.append("cookie", el.clone());
-            }
+        let cookie = res
+            .headers()
+            .get_all("Set-Cookie")
+            .iter()
+            .filter(|element| {
+                let current_cookie = element.to_str().unwrap_or_default();
+                log::trace!("response set-cookie: {}", current_cookie);
 
-            if let Some(_) = se_session.captures(current_cookie) {
-                self.cookie.append("cookie", el.clone());
-            }
-        }
+                re_session.captures(current_cookie).is_some()
+                    || se_session.captures(current_cookie).is_some()
+            })
+            .map(|el| el.to_str().unwrap_or_default())
+            .collect::<Vec<&str>>()
+            .join(";");
+        log::trace!("Cookie: {:?}", cookie);
+
+        let cookie = HeaderValue::from_str(&cookie)?;
+        self.cookie.append("Cookie", cookie);
 
         let body = res.text().await?;
 
@@ -192,14 +118,10 @@ impl GrowattServer {
         let mut payload = HashMap::new();
         payload.insert("mixSn", mix_id);
 
-        let mut hm = header::HeaderMap::new();
-        hm.insert("Referer", self.referer.parse().unwrap());
-
         let res = self
             .client
             .post(url)
             .headers(self.cookie.clone())
-            .headers(hm)
             .form(&payload)
             .send()
             .await?;
@@ -227,14 +149,10 @@ impl GrowattServer {
         );
         let url = self.get_url(&url);
 
-        let mut hm = header::HeaderMap::new();
-        hm.insert("Referer", self.referer.parse().unwrap());
-
         let res = self
             .client
             .post(url)
             .headers(self.cookie.clone())
-            .headers(hm)
             .send()
             .await?;
 
@@ -251,8 +169,22 @@ impl GrowattServer {
 
 #[cfg(test)]
 mod tests {
+
+    use crate::*;
+    use log::info;
+
+    fn init() {
+        let _ = env_logger::builder()
+            .is_test(true)
+            .filter_level(log::LevelFilter::Trace)
+            .try_init();
+    }
+
     #[actix_rt::test]
     async fn login() {
+        init();
+        info!("Start Login test");
+
         let username = std::env::var("GROWATT_TESTS_USERNAME").unwrap();
         let password = std::env::var("GROWATT_TESTS_PASSWORD").unwrap();
 
@@ -281,10 +213,7 @@ mod tests {
 
         let res = client.device_list_by_plant(&plant_id).await;
 
-
-        let res = client
-            .mix_system_status(&mix_id, &plant_id)
-            .await;
+        let res = client.mix_system_status(&mix_id, &plant_id).await;
 
         assert_eq!(res.is_ok(), true);
     }
