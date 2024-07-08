@@ -1,7 +1,9 @@
 pub mod types;
 
 use regex::Regex;
-use types::{RequestError, GrowattResult};
+
+#[allow(unused_imports)]
+pub use types::{RequestError, GrowattResult, MixStatus, GrowattResponse, MixTotalData, DeviceList};
 use std::collections::HashMap;
 
 use serde_json::Value;
@@ -46,21 +48,11 @@ impl GrowattServer {
         }
     }
 
-    fn check_res(body: String) -> bool {
-        let parse_check = serde_json::from_str::<Value>(&body)
-            .ok()
-            .and_then(|v| v.get("result").and_then(|value| value.as_i64()))
-            .map(|num| if num == 0 { false } else { true })
-            .unwrap_or(false);
-
-        parse_check
-    }
-
     pub async fn login(
         &mut self,
         username: &str,
         password: &str,
-    ) -> GrowattResult {
+    ) -> GrowattResult<String> {
 
         let payload: HashMap<&str, &str> =
             HashMap::from([("account", username), ("password", password)]);
@@ -103,23 +95,64 @@ impl GrowattServer {
 
         let body = res.text().await?;
 
-        if Self::check_res(body.clone()) == false {
-            Err(RequestError::LoginFailed)
-        } else {
-            Ok(body)
+        Ok(body)
+
+        //if Self::check_res(body.clone()) == false {
+        //    Err(RequestError::LoginFailed)
+        //} else {
+        //    Ok(body)
+        //}
+    }
+
+    pub async fn mix_total_data (
+        &self,
+        mix_id: &str,
+        plant_id: &str,
+    ) -> GrowattResult<MixTotalData> {
+        let api ="panel/mix/getMIXTotalData";
+    
+        let mut payload = HashMap::new();
+        payload.insert("mixSn", mix_id);
+        payload.insert("plantId", plant_id);
+
+        let mut reqest = self
+            .client
+            .post(url!(api))
+            .form(&payload);
+
+        if let Some(cred) = self.cookie.as_ref() {
+            reqest = reqest.headers(cred.clone())
         }
+
+        let res  = reqest.send().await?;
+
+        log::trace!(
+            "mix_total_data request with status {}",
+            res.status().as_str()
+        );
+
+        let content = res.text().await?;
+
+        //Strip off unusefull part
+        let res: GrowattResponse<MixTotalData> =
+            serde_json::from_str(&content)?;
+        
+
+        Ok(res.into_inner())
+
     }
 
     pub async fn mix_system_status(
         &self,
         mix_id: &str,
         plant_id: &str,
-    ) -> GrowattResult {
+    ) -> GrowattResult<MixStatus> {
 
-        let api = format!("panel/mix/getMIXStatusData?plantId={}", plant_id);
+        let api = "panel/mix/getMIXStatusData";
 
         let mut payload = HashMap::new();
         payload.insert("mixSn", mix_id);
+        payload.insert("plantId", plant_id);
 
         let mut reqest = self
             .client
@@ -138,25 +171,30 @@ impl GrowattServer {
         );
 
         let content = res.text().await?;
+        let rep: GrowattResponse<MixStatus> = serde_json::from_str(&content)?;
+        
+        if rep.is_ok() == false {
+            Err(RequestError::GenericError)
+        } else {
+            Ok(rep.into_inner())
+        }
 
-        //Strip off unusefull part
-        let v =
-            serde_json::from_str(&content).and_then(|v: Value| serde_json::to_string(&v["obj"]))?;
-        Ok(v)
     }
 
     pub async fn device_list_by_plant(
         &self,
         plant_id: &str,
-    ) -> GrowattResult {
-        let api = format!(
-            "panel/getDevicesByPlantList?plantId={}&currPage=1",
-            plant_id
-        );
+    ) -> GrowattResult<DeviceList> {
+        let api = "panel/getDevicesByPlantList";
+
+        let mut payload = HashMap::new();
+        payload.insert("currPage", "1");
+        payload.insert("plantId", plant_id);
 
         let mut reqest = self
             .client
-            .post(url!(api));
+            .post(url!(api))
+            .form(&payload);
 
         if let Some(cred) = self.cookie.as_ref() {
             reqest = reqest.headers(cred.clone())
@@ -167,10 +205,12 @@ impl GrowattServer {
         log::trace!("plant_list request with status {}", res.status().as_str());
 
         let content = res.text().await?;
-        if Self::check_res(content.clone()) == false {
+        let rep: GrowattResponse<DeviceList> = serde_json::from_str(&content)?;
+
+        if rep.is_ok() == false {
             Err(RequestError::GenericError)
         } else {
-            Ok(content)
+            Ok(rep.into_inner())
         }
     }
 }
@@ -179,7 +219,7 @@ impl GrowattServer {
 mod tests {
 
     use crate::*;
-    use log::info;
+    use log::{info, trace};
 
     fn init() {
         let _ = env_logger::builder()
@@ -209,6 +249,20 @@ mod tests {
         assert_eq!(client.login(&username, &password).await.is_err(), false);
     }
 
+        #[actix_rt::test]
+    async fn device_list() -> Result<(), RequestError> {
+        let username = std::env::var("GROWATT_TESTS_USERNAME").unwrap();
+        let password = std::env::var("GROWATT_TESTS_PASSWORD").unwrap();
+        let plant_id = std::env::var("GROWATT_TESTS_PLANTID").unwrap();
+
+        let mut client = GrowattServer::new();
+        client.login(&username, &password).await?;
+
+        let res = client.device_list_by_plant(&plant_id).await?;
+        trace!("{res:?}");
+        Ok(())
+    }
+
     #[actix_rt::test]
     async fn get_mix_data() -> Result<(), RequestError> {
         let username = std::env::var("GROWATT_TESTS_USERNAME").unwrap();
@@ -219,8 +273,23 @@ mod tests {
         let mut client = GrowattServer::new();
         client.login(&username, &password).await?;
 
-        client.device_list_by_plant(&plant_id).await?;
-        client.mix_system_status(&mix_id, &plant_id).await?;
+        let res = client.mix_system_status(&mix_id, &plant_id).await?;
+        trace!("{res:?}");
+        Ok(())
+    }
+
+    #[actix_rt::test]
+    async fn get_total_data() -> Result<(), RequestError> {
+        let username = std::env::var("GROWATT_TESTS_USERNAME").unwrap();
+        let password = std::env::var("GROWATT_TESTS_PASSWORD").unwrap();
+        let plant_id = std::env::var("GROWATT_TESTS_PLANTID").unwrap();
+        let mix_id = std::env::var("GROWATT_TESTS_MIXID").unwrap();
+
+        let mut client = GrowattServer::new();
+        client.login(&username, &password).await?;
+
+        let res = client.mix_total_data(&mix_id, &plant_id).await?;
+        trace!("{res:?}");
 
         Ok(())
     }
