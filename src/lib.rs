@@ -6,8 +6,6 @@ use regex::Regex;
 pub use types::{RequestError, GrowattResult, MixStatus, GrowattResponse, MixTotalData, DeviceList};
 use std::collections::HashMap;
 
-use serde_json::Value;
-
 use reqwest::{
     header::{self, HeaderMap, HeaderValue},
     Client, ClientBuilder,
@@ -290,6 +288,9 @@ mod tests {
 
         let res = client.mix_total_data(&mix_id, &plant_id).await?;
         trace!("{res:?}");
+
+        let _ = res.get_today_data();
+        let _ = res.get_total_data();
 
         Ok(())
     }

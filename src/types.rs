@@ -6,16 +6,16 @@ use chrono::DateTime;
 #[derive(thiserror::Error, Debug)]
 pub enum RequestError {
     
-    #[error("failed to login, unable to extract credentials")]
+    #[error("failed to login, unable to extract credentials {0}")]
     LoginCredentialExtraction(#[from] reqwest::header::InvalidHeaderValue),
 
     #[error("failed to login")]
     LoginFailed,
 
-    #[error("unable to perform the reqest")]
+    #[error("unable to perform the reqest {0}")]
     RequestError(#[from] reqwest::Error),
 
-    #[error("unable to decode response")]
+    #[error("unable to decode response {0}")]
     MalformedResponse(#[from] serde_json::Error),
 
     #[error("unable to decode response")]
@@ -170,6 +170,66 @@ pub struct MixTotalData {
 
     #[serde(deserialize_with = "utils::from_str")]
     etogridTotal: f32,
+}
+
+impl MixTotalData {
+    pub fn get_today_data(&self) -> TodayMixData {
+        TodayMixData{
+            when: self.when,
+            eself: self.eselfToday,
+            elocalLoad: self.elocalLoadToday,
+            gridPower: self.gridPowerToday,
+            photovoltaicRevenue: self.photovoltaicRevenueToday,
+            eex: self.eexToday,
+            etoGrid: self.etoGridToday,
+            edischarge1: self.edischarge1Today,
+            epv: self.epvToday, 
+        }
+    }
+
+    pub fn get_total_data(&self) -> TotalMixData {
+        TotalMixData{
+            when: self.when,
+            eself: self.eselfTotal,
+            elocalLoad: self.elocalLoadTotal,
+            gridPower: self.gridPowerTotal,
+            photovoltaicRevenue: self.photovoltaicRevenueTotal,
+            eex: self.eexTotal,
+            etoGrid: self.etogridTotal,
+            edischarge1: self.edischarge1Total,
+            epv: self.epvTotal, 
+        }
+    }
+}
+
+#[derive(Debug)]
+#[allow(non_snake_case)]
+#[allow(dead_code)]
+pub struct TodayMixData {
+    pub when: When,
+    pub eself: f32,
+    pub elocalLoad: f32,
+    pub gridPower: f32,
+    pub photovoltaicRevenue: f32,
+    pub eex: f32,
+    pub etoGrid: f32,
+    pub edischarge1: f32,
+    pub epv: f32,
+}
+
+#[derive(Debug)]
+#[allow(non_snake_case)]
+#[allow(dead_code)]
+pub struct TotalMixData {
+    pub when: When,
+    pub gridPower: f32,
+    pub eself: f32,
+    pub elocalLoad: f32,
+    pub eex: f32,
+    pub edischarge1: f32,
+    pub photovoltaicRevenue: f32,
+    pub epv: f32,
+    pub etoGrid: f32,
 }
 
 #[allow(non_snake_case)]
