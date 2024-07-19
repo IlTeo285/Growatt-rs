@@ -1,7 +1,6 @@
-use chrono::offset::Utc;
+use chrono::{Local, Utc, DateTime};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use chrono::DateTime;
 
 #[derive(thiserror::Error, Debug)]
 pub enum RequestError {
@@ -58,6 +57,14 @@ pub struct When(i64);
 impl Default for When {
     fn default() -> Self {
         Self(Utc::now().timestamp_nanos_opt().unwrap_or_default())
+    }
+}
+
+impl ToString for When {
+    fn to_string(&self) -> String {
+        let dt = chrono::DateTime::from_timestamp_nanos(self.0);
+        let now_local: DateTime<Local> = dt.with_timezone(&Local);
+        format!("{}", now_local.format("%d/%m/%Y %H:%M:%S"))
     }
 }
 
@@ -327,5 +334,26 @@ impl<T> GrowattResponse<T> where T: Debug {
 
     pub fn into_inner(self) -> T {
         self.obj
+    }
+}
+
+
+#[cfg(test)]
+mod when_test {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn from() {
+        let wh = When(1234i64);
+        assert_eq!(Into::<i64>::into(wh), 1234i64);
+    }
+
+    #[test]
+    fn to_string() {
+        let date_time: DateTime<Local> = Local.with_ymd_and_hms(2017, 04, 02, 12, 50, 32).unwrap();
+        let wh = When(date_time.timestamp_nanos_opt().unwrap());
+        let formatted = format!("{}", wh.to_string());
+        assert_eq!(formatted, "02/04/2017 12:50:32");
     }
 }
